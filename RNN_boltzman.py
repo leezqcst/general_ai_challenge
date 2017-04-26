@@ -30,7 +30,7 @@ class RNNRecurrentBoltzmannMachine(snt.RNNCore):
 		self._submodules=[]
 		for layer in range(self._num_cluster_layers):
 			master_controller=snt.RNN(self._hidden_dim,name='master_controller_'+str(layer))
-			master_controller_weight_encoder=snt.Linear(self._hidden_dim*self._cluster_layer_size,name='master_encoder_'+str(layer))
+			master_controller_weight_encoder=snt.Linear(self._cluster_layer_size*self._cluster_layer_size,name='master_encoder_'+str(layer))
 			if self._embed_controller:
 				master_controller_embedding=snt.Linear(self._hidden_dim,name='master_controller_'+str(layer)+'_embedding')
 				to_append=(master_controller,master_controller_embedding,master_controller_weight_encoder)
@@ -102,7 +102,6 @@ class RNNRecurrentBoltzmannMachine(snt.RNNCore):
 				transformation_weights=encoder(transformation_weights)
 				new_states.append(new_state)
 
-			self._controllers.append(to_append)
 			if not self._unique_embedding and self._linearity_before:
 				#TODO: mikght need a call to reuse_variables
 				linear_in=self._input_linearities[layer][0]
@@ -111,6 +110,8 @@ class RNNRecurrentBoltzmannMachine(snt.RNNCore):
 				linear_out=self._output_linearities[layer][0]
 			if layer==0:
 				curr_inputs=[curr_inputs*self._cluster_layer_size]
+			module_outputs=[]
+			curr_states=[]
 			for submodule in range(self._cluster_layer_size):
 				if self._unique_embedding and self._linearity_before:
 					linear_in=self._input_linearities[layer][submodule]
@@ -119,20 +120,32 @@ class RNNRecurrentBoltzmannMachine(snt.RNNCore):
 				else:
 					curr_inputs[submodule]
 				lstm_output,new_state=self._submodules[layer][submodule](submodule_input,self.get_state(state,layer,submodule))
-				new_states.append(new_state)
+				curr_states.append(new_state)
 				if self._unique_embedding and self._linearity_after:
 					linear_out=self._output_linearities[layer][submodule]
 				if self._linearity_after:
 					submodule_output=linear_out(lstm_output)
 				else:
 					submodule_output=lstm_output
-				module_output=submodule_output
+				module_outputs.append(tf.expand_dims(submodule_output,-1))
+			curr_inputs=module_outputs
+			module_outputs=tf.concat(module_outputs,axis=-1)
+			module_output=module_outputs.reshape(self._hidden_dim*self._cluster_layer_size)
+			module_outputs=tf.expand_dims(module_outputs,axis=-1)
 			#######
 			# perform weighted master_controller op here and feed it to next layer as curr_inputs (curr_inputs should be shape [self._cluster_layer_size,hidden_dim])
 			# TODO
 			# TODO
 			# TODO
 			#######
+			transformation_weights=tf.reshape([-1,1,self._cluster_layer_size,self._cluster_layer_size])
+			normalized_weights=tf.nn.softmax(transformation_weights)
+			state_updates=tf.multiply(module_outputs,normalized_weights)
+			state_updates=tf.reduce_sum(state_updates,axis=-2)
+			state_updates=tf.squeeze()
+			for i in range(self._cluster_layer_size):
+				curr_states[i]+=state_updates[:,:,i]
+			new_states+=curr_states
 		return self._master_encoder(module_output),tuple(new_states)
 
 
